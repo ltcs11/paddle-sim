@@ -184,12 +184,16 @@ def forward(inference_program: Program,
         for name, shape in input_shapes.items():
             value = np.random.rand(*shape).astype('float32')
             input_data[name] = value
-            print(value.shape)
+            # print(value.shape)
 
     place = fluid.CPUPlace()
     exe = fluid.Executor(place)
     tensor_lists = get_output_tensor(inference_program)
-    results = exe.run(inference_program, feed=input_data, fetch_list=tensor_lists)
+    try:
+        results = exe.run(inference_program, feed=input_data, fetch_list=tensor_lists)
+    except RuntimeError:
+        results = exe.run(inference_program, feed=input_data, fetch_list=tensor_lists, return_numpy=False)
+        results = [np.array(tensor) for tensor in results]
 
     new_results = dict()
     assert len(tensor_lists) == len(results), 'fetch var and infer output mismatch!'
@@ -197,9 +201,11 @@ def forward(inference_program: Program,
         new_results[tensor.name] = results[idx]
         # process some const node output have -1 in shape
         assert len(tensor.shape) == len(results[idx].shape), 'fetch var and infer output mismatch!'
-        for dim in range(len(tensor.shape)):
-            assert int(tensor.shape[dim]) == -1 or int(tensor.shape[dim]) == results[idx].shape[dim]
-        # print(tensor.shape, results[idx].shape)
+        # FIXME skip dynamic shape tensor(nms, comes from raw output)
+        if '_nms_' not in tensor.name:
+            for dim in range(len(tensor.shape)):
+                assert int(tensor.shape[dim]) == -1 or int(tensor.shape[dim]) == results[idx].shape[dim], \
+                    f'shape mismatch with tensor:{tensor.name} and {tensor.shape} vs {results[idx].shape}'
 
     return new_results
 

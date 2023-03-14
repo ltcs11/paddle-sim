@@ -16,7 +16,7 @@ from paddle import fluid
 from paddle.fluid.framework import Program, Variable, Operator
 from paddle.fluid.framework import convert_np_dtype_to_dtype_
 
-import paddle_helper as ph
+import paddlesim.paddle_helper as ph
 
 
 T = TypeVar('T')
@@ -124,6 +124,8 @@ def eliminate_const_nodes(inference_program: Program, const_nodes: List[Operator
     def change_var_into_param(c_block, d_node):
         # print(d_node.output_arg_names)
         for key in d_node.output_names:
+            if ph.is_orphan_blob(d_node.type, key):
+                continue
             for var_name in d_node.output(key):
                 # del old var(this is un-used)
                 c_block._remove_var(var_name)
@@ -141,6 +143,9 @@ def eliminate_const_nodes(inference_program: Program, const_nodes: List[Operator
                 elif dtype == VarDesc.VarType.INT32:
                     value_name = "int32_values"
                     values = [int(v) for v in res[var_name].flat]
+                elif dtype == VarDesc.VarType.INT64:
+                    value_name = "int64_values"
+                    values = [int(v) for v in res[var_name].flat]
                 else:
                     raise ValueError("Unsupported dtype %s", dtype)
                 _ = c_block._insert_op(index=d_node.idx+1, type='assign_value',
@@ -149,8 +154,15 @@ def eliminate_const_nodes(inference_program: Program, const_nodes: List[Operator
                                            'dtype': convert_np_dtype_to_dtype_(res[var_name].dtype),
                                            'shape': res[var_name].shape,
                                            value_name: values})
+                # print(var_name, res[var_name].shape, convert_np_dtype_to_dtype_(res[var_name].dtype))
+                # add new param into graph
+                # c_block.vars[var_name] = new_params
                 c_block._sync_with_cpp()
 
+                # set param data
+                # print(c_block.has_var(new_name))
+                # c_block.vars[new_name].set_value(res[var_name])
+                # c_block.vars['fill_constant_1.tmp_0'].set_value(np.random.rand(1))
         # del old node
         cur_block._remove_op(d_node.idx)
 
@@ -182,6 +194,7 @@ def shaping_and_optimize(inference_program: Program) -> Program:
     :return:
     """
     # tensor_list = ph.get_output_tensor(inference_program)
+
     ph.infer_shape(inference_program, {})
     new_program = inference_program._inference_optimize()
 
@@ -228,7 +241,7 @@ def shaping_and_folding_loop(x: T, shaping_func: Callable[[T], T], folding_func:
             return x
 
 
-def simplify(model_dir, model_filename, params_filename, save_dir='output'):
+def simplify(model_dir, model_filename, params_filename, input_info, save_dir='output'):
     paddle.enable_static()
     exe = fluid.Executor(fluid.CPUPlace())
     [prog, ipts, outs] = fluid.io.load_inference_model(
@@ -238,7 +251,8 @@ def simplify(model_dir, model_filename, params_filename, save_dir='output'):
         params_filename=params_filename)
 
     # pre-fix shape to fix input shape
-    prog = _infer_shapes_and_optimize(prog, input_shape_dict={'x': (1, 3, 224, 224)})
+    assert isinstance(input_info, dict)
+    prog = _infer_shapes_and_optimize(prog, input_shape_dict=input_info)
 
     new_program = shaping_and_folding_loop(prog, shaping_and_optimize, constant_folding)
 
@@ -248,4 +262,4 @@ def simplify(model_dir, model_filename, params_filename, save_dir='output'):
 
 
 if __name__ == '__main__':
-    simplify('./VIMER-UFO', 'model.pdmodel', 'model.pdiparams')
+    simplify('./VIMER-UFO', 'model.pdmodel', 'model.pdiparams', input_info={'x': (1, 3, 224, 224)})
